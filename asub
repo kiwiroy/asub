@@ -8,11 +8,11 @@ use Getopt::Std;
 use Cwd qw/abs_path/;
 use Sys::Hostname qw/hostname/;
 
-my $version = "2.1.1-r24";
+my $version = "2.2";
 
 # parsing command line
-my %opts = (R=>'', j=>'', q=>'', c=>'', w=>'', M=>'', G=>'', n=>1, m=>'', W=>'', C=>'', g=>1, P=>'smp');
-getopts('P:R:j:k:q:c:pw:M:n:m:W:g:C:Gx:', \%opts);
+my %opts = (R=>'', j=>'', q=>'', c=>'', w=>'', M=>'', G=>'', n=>1, m=>'', W=>'', C=>'', g=>1, pe=>'smp');
+getopts('P:R:j:k:q:c:pw:pe:M:n:m:W:g:C:Gx:', \%opts);
 &usage if (-t STDIN && @ARGV == 0);
 
 # adjusting parameters
@@ -43,33 +43,37 @@ if (!defined($opts{k}) || $opts{k} < 1) { # prepare to run
 	$_ = $opts{j};
 	if ($is_slurm) {
 		$opts{q} = qq/-p $opts{q}/ if $opts{q};
+		$opts{P} = qq/-A "$opts{P}"/ if $opts{P};
 		$opts{R} = qq/--mem=/ . ($opts{M}*1024) if $opts{M} && $opts{M} =~ /^\d+$/;
 		$opts{R} .= qq/ -N1 -n$opts{n}/ if $opts{n} > 1;
 		$opts{R} .= qq/ -t$opts{W}/ if $opts{W};
 		$opts{x} = qq/-x $opts{x}/ if defined($opts{x}) && $opts{x};
 		$cmd = qq(mkdir -p $_.out $_.err && echo -e '#!/bin/sh\\n$0 $opts{G} -g $opts{g} -k \${SLURM_ARRAY_TASK_ID} $_.sh' | sbatch -J$_ )
-			. qq(--array=1-$n_jobs -o $_.out/\%a.out -e $_.err/\%a.err $opts{R} $opts{q} $opts{x});
+			. qq(--array=1-$n_jobs -o $_.out/\%a.out -e $_.err/\%a.err $opts{R} $opts{q} $opts{P} $opts{x});
 	} elsif (!$is_ge) { # LSF
 		$opts{q} = qq/-q $opts{q}/ if $opts{q};
 		$opts{c} = qq/\%$opts{c}/ if $opts{c};
 		$opts{w} = qq/-w "$opts{w}"/ if $opts{w};
 
 		# resource requirements and limits
-		$opts{R} = qq/-R "$opts{R}"/ if $opts{R};
+		my @res_req;
+		my $r_opt = delete $opts{R};
+		push @res_req, $r_opt          if $r_opt;
+		push @res_req, 'span[hosts=1]' if $opts{n};
+		if ($opts{M}) {
+			my $mem = int($opts{M} * 1024 / $opts{n}); # in LSF, rusage and -M set per-process limit
+			push @res_req, "rusage[mem=$mem]";
+			#$opts{R} .= qq/ -M $mem/;
+		}
+		$opts{R}  = qq/-R "@res_req"/ if @res_req;
 		$opts{R} .= qq/ -m $opts{m}/ if $opts{m};
 		$opts{R} .= qq/ -n $opts{n}/ if $opts{n};
 		$opts{R} .= qq/ -W $opts{W}/ if $opts{W};
 		$opts{R} .= qq/ -c $opts{C}/ if $opts{C};
-		$opts{R} .= qq/ -R "span[hosts=1]"/ if $opts{n};
-		if ($opts{M}) {
-			my $mem = int($opts{M} * 1024 / $opts{n}); # in LSF, rusage and -M set per-process limit
-			$opts{R} .= qq/ -R "rusage[mem=$mem]"/;
-			#$opts{R} .= qq/ -M $mem/;
-		}
 
 		# the command line to bsub
 		$cmd = qq(mkdir -p $_.out $_.err && echo '$0 $opts{G} -g $opts{g} -k \${LSB_JOBINDEX} $_.sh' | bsub -J$_)
-			   . qq("[1-$n_jobs]$opts{c}" -o $_.out/\%I.out -e $_.err/\%I.err $opts{R} $opts{q} $opts{w});
+			   . qq("[1-$n_jobs]$opts{c}" -o $_.out/\%I.out -e $_.err/\%I.err $opts{R} $opts{q} $opts{P} $opts{w});
 	} else { # SGE
 		$opts{q} = qq/-q $opts{q}/ if $opts{q};
 		$opts{R} = qq/-l "$opts{R}"/ if $opts{R};
@@ -82,7 +86,7 @@ if (!defined($opts{k}) || $opts{k} < 1) { # prepare to run
 		$opts{w} = qq/ -hold_jid $opts{w}/ if $opts{w};
 		my $asub = abs_path($0);
 		$cmd = qq(mkdir -p $_.out $_.err && echo '$asub $opts{G} -g $opts{g} -k \${SGE_TASK_ID} $_.sh' | qsub -V -N $_ -cwd )
-			. qq(-t 1-$n_jobs -o '$_.out/\$TASK_ID.out' -e '$_.err/\$TASK_ID.err' $opts{R} $opts{q} $opts{w});
+			. qq(-t 1-$n_jobs -o '$_.out/\$TASK_ID.out' -e '$_.err/\$TASK_ID.err' $opts{R} $opts{q} $opts{P} $opts{w});
 	}
 	defined($opts{p})? (print "$cmd\n") : system($cmd);
 } else { # run the command
@@ -166,6 +170,7 @@ Options: -R STR    resources string (only one -R allowed) [null]
          -C STR    CPU time limit (LSF only) [none]
          -w STR    job dependency [null]
          -q STR    queue name [default queue]
+         -P STR    project name (LSF/SGE) or account (SLURM) [none]
          -j STR    job name [auto]
          -c INT    number of concurrent jobs (LSF only) [max]
          -m STR    host group (LSF only) [null]
